@@ -4,12 +4,6 @@ import Testing
 
 @testable import StarkIPC
 
-private func socketDirectory() throws -> URL {
-  let directory = URL(fileURLWithPath: "/tmp/sborders-test-" + UUID().uuidString.prefix(8))
-  try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-  return directory
-}
-
 @Test func roundTripAndExclusiveOwnership() async throws {
   let directory = try socketDirectory()
   defer { try? FileManager.default.removeItem(at: directory) }
@@ -96,17 +90,6 @@ private func socketDirectory() throws -> URL {
   try Data("replacement".utf8).write(to: path)
   server.stop()
   #expect(try String(contentsOf: path, encoding: .utf8) == "replacement")
-}
-
-private func testServer(
-  path: String,
-  handler: @escaping @Sendable (ControlRequest) async -> ControlResponse
-) -> SocketServer<ControlRequest, ControlResponse> {
-  SocketServer(
-    path: path,
-    errorResponse: { ControlResponse(ok: false, error: $0.localizedDescription) },
-    handler: { SocketReply(await handler($0)) }
-  )
 }
 
 @Test func streamingSurvivesRequestDeadlineAndReceivesMultipleFrames() throws {
@@ -219,10 +202,6 @@ private func testServer(
   #expect(completed.wait(timeout: .now() + 2) == .success)
 }
 
-private func waitForSignal(_ semaphore: DispatchSemaphore) {
-  _ = semaphore.wait(timeout: .now() + 5)
-}
-
 @Test func shutdownDoesNotDeleteAReplacementSocket() throws {
   let directory = try socketDirectory()
   defer { try? FileManager.default.removeItem(at: directory) }
@@ -256,4 +235,25 @@ private func waitForSignal(_ semaphore: DispatchSemaphore) {
   let client = try SocketClient(path: path)
   try client.send(42)
   #expect(try client.receive(String.self) == "value=42")
+}
+
+private func socketDirectory() throws -> URL {
+  let directory = URL(fileURLWithPath: "/tmp/sborders-test-" + UUID().uuidString.prefix(8))
+  try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+  return directory
+}
+
+private func testServer(
+  path: String,
+  handler: @escaping @Sendable (ControlRequest) async -> ControlResponse
+) -> SocketServer<ControlRequest, ControlResponse> {
+  SocketServer(
+    path: path,
+    errorResponse: { ControlResponse(ok: false, error: $0.localizedDescription) },
+    handler: { SocketReply(await handler($0)) }
+  )
+}
+
+private func waitForSignal(_ semaphore: DispatchSemaphore) {
+  _ = semaphore.wait(timeout: .now() + 5)
 }

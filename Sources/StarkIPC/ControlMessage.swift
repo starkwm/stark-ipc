@@ -1,5 +1,29 @@
 import Foundation
 
+public struct ControlRequest: Codable, Sendable {
+  public var command: String
+  public var arguments: [String]
+  public var value: JSONValue?
+
+  public init(command: String, arguments: [String] = [], value: JSONValue? = nil) {
+    self.command = command
+    self.arguments = arguments
+    self.value = value
+  }
+}
+
+public struct ControlResponse: Codable, Sendable {
+  public let ok: Bool
+  public let value: JSONValue?
+  public let error: String?
+
+  public init(ok: Bool = true, value: JSONValue? = nil, error: String? = nil) {
+    self.ok = ok
+    self.value = value
+    self.error = error
+  }
+}
+
 public enum JSONValue: Codable, Equatable, Sendable {
   case string(String)
   case number(Double)
@@ -37,29 +61,5 @@ public enum JSONValue: Codable, Equatable, Sendable {
     case .array(let value): try container.encode(value)
     case .null: try container.encodeNil()
     }
-  }
-}
-
-public struct ControlRequest: Codable, Sendable {
-  public var command: String
-  public var arguments: [String]
-  public var value: JSONValue?
-
-  public init(command: String, arguments: [String] = [], value: JSONValue? = nil) {
-    self.command = command
-    self.arguments = arguments
-    self.value = value
-  }
-}
-
-public struct ControlResponse: Codable, Sendable {
-  public let ok: Bool
-  public let value: JSONValue?
-  public let error: String?
-
-  public init(ok: Bool = true, value: JSONValue? = nil, error: String? = nil) {
-    self.ok = ok
-    self.value = value
-    self.error = error
   }
 }
