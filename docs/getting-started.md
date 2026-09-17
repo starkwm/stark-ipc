@@ -1,16 +1,18 @@
-# StarkIPC
+# Getting started
 
-Swift utilities for sending JSON requests and responses over Unix sockets between processes running as the same user.
+[Documentation index](index.md)
 
-Requires Swift 6.2 and macOS 26.
+## Requirements
 
-See the [documentation](docs/index.md) for an overview and the [API reference](docs/api/index.md) for types, methods, and transport behavior.
+- macOS 26 or later
+- Swift 6.2 or later
+- Client and server processes running as the same user
 
-## Usage
+## Package setup
 
 Add `https://github.com/starkwm/stark-ipc.git` as a Swift package dependency and link the `StarkIPC` product to your target.
 
-### Start a server
+## Start a server
 
 Create and keep the server in your application. Supply a request handler and a response for errors:
 
@@ -40,7 +42,7 @@ try server.start()
 
 The server accepts one request per connection. Call `server.stop()` to close connections and release the socket.
 
-### Send a request
+## Send a request
 
 Connect to the same socket path from another process:
 
@@ -58,6 +60,4 @@ let response = try client.receive(ControlResponse.self)
 
 The client is synchronous. Use each instance from one caller. Use `receiveLine()` to read the original JSON bytes instead of decoding a response.
 
-For subscriptions, return a `SocketReply` with `keepOpen: true` and send updates with `server.publish(_:)`. Create the client with `streaming: true` to disable its receive timeout, then receive each update on the same connection.
-
-`ControlRequest`, `ControlResponse` and `JSONValue` provide a shared message format. You can also use your own request and response types. Server requests must conform to `Decodable & Sendable`, and responses to `Encodable & Sendable`.
+See [connections and subscriptions](connections.md) to keep a connection open for updates, and the [API reference](api/index.md) for method signatures and message types.
