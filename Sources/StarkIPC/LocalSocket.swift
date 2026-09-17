@@ -9,6 +9,7 @@ public enum LocalSocket {
     guard !path.isEmpty, !path.utf8.contains(0) else {
       throw SocketError.message("Invalid socket path.")
     }
+
     var address = sockaddr_un()
     let bytes = Array(path.utf8) + [0]
     guard bytes.count <= MemoryLayout.size(ofValue: address.sun_path) else {

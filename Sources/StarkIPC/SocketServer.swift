@@ -37,6 +37,7 @@ public final class SocketServer<Request: Decodable & Sendable, Response: Encodab
     self.serviceName = serviceName
     self.errorResponse = errorResponse
     self.handler = handler
+
     queue.setSpecific(key: queueKey, value: true)
   }
 
@@ -45,6 +46,7 @@ public final class SocketServer<Request: Decodable & Sendable, Response: Encodab
   public func start() throws {
     try queue.sync {
       guard listener == nil else { return }
+
       try LocalSocket.address(path) { _, _ in }
 
       let directory = URL(fileURLWithPath: path).deletingLastPathComponent()
@@ -87,6 +89,7 @@ public final class SocketServer<Request: Decodable & Sendable, Response: Encodab
             socketIdentity = (bound.st_dev, bound.st_ino)
           }
         }
+
         guard status == 0, socketIdentity != nil, chmod(path, 0o600) == 0, listen(fd, 16) == 0
         else {
           close(fd)
@@ -105,6 +108,7 @@ public final class SocketServer<Request: Decodable & Sendable, Response: Encodab
         removeOwnedSocket()
         close(lock)
         lock = -1
+
         throw error
       }
     }
@@ -121,6 +125,7 @@ public final class SocketServer<Request: Decodable & Sendable, Response: Encodab
   public func publish(_ response: Response) {
     queue.async { [weak self] in
       guard let self else { return }
+
       for fd in self.connections.keys.filter({ self.connections[$0]?.subscribed == true }) {
         self.respond(response, to: fd, closeAfter: false)
       }
@@ -132,7 +137,9 @@ public final class SocketServer<Request: Decodable & Sendable, Response: Encodab
 
     listener?.cancel()
     listener = nil
+
     for fd in Array(connections.keys) { disconnect(fd) }
+
     removeOwnedSocket()
 
     if lock >= 0 {
@@ -143,12 +150,14 @@ public final class SocketServer<Request: Decodable & Sendable, Response: Encodab
 
   private func removeOwnedSocket() {
     guard let identity = socketIdentity else { return }
+
     var info = stat()
     if lstat(path, &info) == 0, info.st_mode & S_IFMT == S_IFSOCK,
       info.st_dev == identity.0, info.st_ino == identity.1
     {
       unlink(path)
     }
+
     socketIdentity = nil
   }
 
@@ -166,6 +175,7 @@ public final class SocketServer<Request: Decodable & Sendable, Response: Encodab
 
       _ = fcntl(client, F_SETFL, O_NONBLOCK)
       _ = fcntl(client, F_SETFD, FD_CLOEXEC)
+
       var one: Int32 = 1
       setsockopt(client, SOL_SOCKET, SO_NOSIGPIPE, &one, socklen_t(MemoryLayout<Int32>.size))
 
@@ -201,6 +211,7 @@ public final class SocketServer<Request: Decodable & Sendable, Response: Encodab
     }
 
     connections[fd]?.data.append(contentsOf: buffer.prefix(count))
+
     guard let connection = connections[fd] else { return }
     guard connection.data.count <= 131_072 else {
       disconnect(fd)
@@ -220,9 +231,11 @@ public final class SocketServer<Request: Decodable & Sendable, Response: Encodab
 
       Task { [weak self, handler] in
         let reply = await handler(request)
+
         self?.queue.async { [weak self] in
           guard let self else { return }
           defer { reply.onComplete() }
+
           guard self.connections[fd]?.id == id else { return }
 
           self.connections[fd]?.subscribed = reply.keepOpen
