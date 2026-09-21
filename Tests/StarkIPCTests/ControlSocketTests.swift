@@ -290,6 +290,113 @@ import Testing
   #expect(try client.receive(String.self) == "value=42")
 }
 
+@Test func largeRepliesWaitForReadersAndCompleteAfterWriting() throws {
+  let directory = try socketDirectory()
+  defer { try? FileManager.default.removeItem(at: directory) }
+
+  let path = directory.appending(path: "control.sock").path
+  let payload = String(repeating: "x", count: 800_000)
+  let completed = DispatchSemaphore(value: 0)
+  let server = SocketServer<Int, String>(
+    path: path,
+    errorResponse: { $0.localizedDescription },
+    handler: { _ in SocketReply(payload, onComplete: { completed.signal() }) }
+  )
+  try server.start()
+  defer { server.stop() }
+
+  let client = try SocketClient(path: path)
+  try client.send(1)
+  #expect(completed.wait(timeout: .now() + 0.1) == .timedOut)
+  #expect(try client.receive(String.self) == payload)
+  #expect(completed.wait(timeout: .now() + 2) == .success)
+  #expect(throws: (any Error).self) { try client.receiveLine() }
+}
+
+@Test func largePublishedRepliesKeepTheirOrder() throws {
+  let directory = try socketDirectory()
+  defer { try? FileManager.default.removeItem(at: directory) }
+
+  let path = directory.appending(path: "control.sock").path
+  let server = SocketServer<Int, String>(
+    path: path,
+    errorResponse: { $0.localizedDescription },
+    handler: { _ in SocketReply("ready", keepOpen: true) }
+  )
+  try server.start()
+  defer { server.stop() }
+
+  let client = try SocketClient(path: path)
+  try client.send(1)
+  #expect(try client.receive(String.self) == "ready")
+
+  let first = String(repeating: "a", count: 200_000)
+  let second = String(repeating: "b", count: 200_000)
+  server.publish(first)
+  server.publish(second)
+  #expect(try client.receive(String.self) == first)
+  #expect(try client.receive(String.self) == second)
+}
+
+@Test(arguments: [false, true])
+func stalledSubscriptionsDoNotBlockRequests(stop: Bool) throws {
+  let directory = try socketDirectory()
+  defer { try? FileManager.default.removeItem(at: directory) }
+
+  let path = directory.appending(path: "control.sock").path
+  let entered = DispatchSemaphore(value: 0)
+  let completed = DispatchSemaphore(value: 0)
+  let server = SocketServer<Int, String>(
+    path: path,
+    errorResponse: { $0.localizedDescription },
+    handler: { request in
+      if request == 1 {
+        entered.signal()
+        return SocketReply(
+          String(repeating: "x", count: 800_000),
+          keepOpen: true,
+          onComplete: { completed.signal() }
+        )
+      }
+      return SocketReply("ok")
+    }
+  )
+  try server.start()
+  defer { server.stop() }
+
+  let stalled = try SocketClient(path: path)
+  try stalled.send(1)
+  #expect(entered.wait(timeout: .now() + 2) == .success)
+
+  let client = try SocketClient(path: path)
+  try client.send(2)
+  #expect(try client.receive(String.self) == "ok")
+  #expect(completed.wait(timeout: .now()) == .timedOut)
+
+  if stop { server.stop() }
+  #expect(completed.wait(timeout: .now() + 6) == .success)
+  #expect(throws: (any Error).self) { try stalled.receiveLine() }
+  #expect(completed.wait(timeout: .now()) == .timedOut)
+}
+
+@Test func oversizedRepliesDisconnect() throws {
+  let directory = try socketDirectory()
+  defer { try? FileManager.default.removeItem(at: directory) }
+
+  let path = directory.appending(path: "control.sock").path
+  let server = SocketServer<Int, String>(
+    path: path,
+    errorResponse: { $0.localizedDescription },
+    handler: { _ in SocketReply(String(repeating: "x", count: 1_048_576)) }
+  )
+  try server.start()
+  defer { server.stop() }
+
+  let client = try SocketClient(path: path)
+  try client.send(1)
+  #expect(throws: (any Error).self) { try client.receiveLine() }
+}
+
 private func socketDirectory() throws -> URL {
   let directory = URL(fileURLWithPath: "/tmp/sborders-test-" + UUID().uuidString.prefix(8))
   try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
