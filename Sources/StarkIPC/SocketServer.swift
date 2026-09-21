@@ -5,12 +5,20 @@ import Foundation
 public final class SocketServer<Request: Decodable & Sendable, Response: Encodable & Sendable>:
   @unchecked Sendable
 {
+  private struct Write {
+    let data: Data
+    let onComplete: (@Sendable () -> Void)?
+    var offset = 0
+  }
+
   private struct Connection {
     let id = UUID()
     let source: any DispatchSourceRead
     var data = Data()
     var subscribed = false
     var handling = false
+    var writes: [Write] = []
+    var writer: (any DispatchSourceWrite)?
   }
 
   private let serviceName: String
@@ -127,7 +135,7 @@ public final class SocketServer<Request: Decodable & Sendable, Response: Encodab
       guard let self else { return }
 
       for fd in self.connections.keys.filter({ self.connections[$0]?.subscribed == true }) {
-        self.respond(response, to: fd, closeAfter: false)
+        self.respond(response, to: fd)
       }
     }
   }
@@ -234,27 +242,104 @@ public final class SocketServer<Request: Decodable & Sendable, Response: Encodab
 
         self?.queue.async { [weak self] in
           guard let self else { return }
-          defer { reply.onComplete() }
-
-          guard self.connections[fd]?.id == id else { return }
+          guard self.connections[fd]?.id == id else {
+            reply.onComplete()
+            return
+          }
 
           self.connections[fd]?.subscribed = reply.keepOpen
-          self.respond(reply.response, to: fd, closeAfter: !reply.keepOpen)
+          self.respond(reply.response, to: fd, onComplete: reply.onComplete)
         }
       }
     } catch { respond(errorResponse(error), to: fd) }
   }
 
-  private func respond(_ response: Response, to fd: Int32, closeAfter: Bool = true) {
+  private func respond(
+    _ response: Response,
+    to fd: Int32,
+    onComplete: (@Sendable () -> Void)? = nil
+  ) {
     do {
       var data = try JSONEncoder().encode(response)
       data.append(10)
 
-      // Disconnect slow clients rather than blocking the runtime or growing buffers.
-      try LocalSocket.send(data, to: fd)
-      if closeAfter { disconnect(fd) }
-    } catch { disconnect(fd) }
+      let writes = connections[fd]?.writes ?? []
+      let pendingBytes = writes.reduce(0) { $0 + $1.data.count - $1.offset }
+      guard writes.count < 256, data.count <= 1_048_576 - pendingBytes else {
+        throw SocketError.message("Response buffer is full.")
+      }
+
+      connections[fd]?.writes.append(Write(data: data, onComplete: onComplete))
+      writeClient(fd)
+    } catch {
+      disconnect(fd)
+      onComplete?()
+    }
   }
 
-  private func disconnect(_ fd: Int32) { connections.removeValue(forKey: fd)?.source.cancel() }
+  private func writeClient(_ fd: Int32) {
+    while let write = connections[fd]?.writes.first {
+      let count = write.data.withUnsafeBytes { buffer in
+        Darwin.send(
+          fd,
+          buffer.baseAddress!.advanced(by: write.offset),
+          buffer.count - write.offset,
+          0
+        )
+      }
+      if count < 0 && errno == EINTR { continue }
+      if count < 0 && errno == EAGAIN {
+        waitToWrite(fd)
+        return
+      }
+      guard count > 0 else {
+        disconnect(fd)
+        return
+      }
+
+      connections[fd]?.writes[0].offset += count
+      guard write.offset + count == write.data.count else { continue }
+
+      connections[fd]?.writes.removeFirst()
+      if connections[fd]?.subscribed == false { disconnect(fd) }
+      write.onComplete?()
+    }
+
+    connections[fd]?.writer?.cancel()
+    connections[fd]?.writer = nil
+  }
+
+  private func waitToWrite(_ fd: Int32) {
+    guard let connection = connections[fd], connection.writer == nil else { return }
+
+    // Give the write source its own descriptor so either source can cancel safely.
+    let descriptor = dup(fd)
+    guard descriptor >= 0 else {
+      disconnect(fd)
+      return
+    }
+    _ = fcntl(descriptor, F_SETFD, FD_CLOEXEC)
+
+    let id = connection.id
+    let writer = DispatchSource.makeWriteSource(fileDescriptor: descriptor, queue: queue)
+    writer.setEventHandler { [weak self] in
+      guard self?.connections[fd]?.id == id else { return }
+      self?.writeClient(fd)
+    }
+    writer.setCancelHandler { close(descriptor) }
+    connections[fd]?.writer = writer
+    writer.resume()
+
+    queue.asyncAfter(deadline: .now() + 5) { [weak self] in
+      guard self?.connections[fd]?.writer === writer else { return }
+      self?.disconnect(fd)
+    }
+  }
+
+  private func disconnect(_ fd: Int32) {
+    guard let connection = connections.removeValue(forKey: fd) else { return }
+    connection.writer?.cancel()
+    connection.source.cancel()
+    for write in connection.writes { write.onComplete?() }
+  }
 }

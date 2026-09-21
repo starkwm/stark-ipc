@@ -92,4 +92,4 @@ public struct SocketReply<Response: Sendable>: Sendable {
 
 `response` is the initial response. `keepOpen` defaults to `false`, so the server closes the connection after attempting the reply. Set it to `true` to receive future calls to `publish(_:)`.
 
-`onComplete` runs on the server's internal queue after processing the reply, including when writing fails or the connection has already disappeared. It does not confirm that the client received the response. It is not guaranteed to run if the server has been deallocated. Keep the callback short and avoid calling `start()` from it because `start()` synchronously enters that same queue.
+`onComplete` runs on the server's internal queue after the reply has been written to the socket, or when writing fails or the connection disappears. It waits for buffered writes but does not confirm that the client received the response. It is not guaranteed to run if the server has been deallocated. Keep the callback short and avoid calling `start()` from it because `start()` synchronously enters that same queue.
