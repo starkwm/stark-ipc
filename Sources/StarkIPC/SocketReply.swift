@@ -1,4 +1,4 @@
-/// The application chooses connection lifetime and any action after attempting the reply.
+/// A response, whether to keep its connection open, and a callback after the send attempt.
 public struct SocketReply<Response: Sendable>: Sendable {
   public let response: Response
   public let keepOpen: Bool

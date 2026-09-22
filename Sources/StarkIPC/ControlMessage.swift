@@ -33,20 +33,20 @@ public enum JSONValue: Codable, Equatable, Sendable {
   case null
 
   public init(from decoder: any Decoder) throws {
-    let value = try decoder.singleValueContainer()
+    let container = try decoder.singleValueContainer()
 
-    if value.decodeNil() {
+    if container.decodeNil() {
       self = .null
-    } else if let v = try? value.decode(Bool.self) {
-      self = .bool(v)
-    } else if let v = try? value.decode(Double.self) {
-      self = .number(v)
-    } else if let v = try? value.decode(String.self) {
-      self = .string(v)
-    } else if let v = try? value.decode([String: JSONValue].self) {
-      self = .object(v)
+    } else if let value = try? container.decode(Bool.self) {
+      self = .bool(value)
+    } else if let value = try? container.decode(Double.self) {
+      self = .number(value)
+    } else if let value = try? container.decode(String.self) {
+      self = .string(value)
+    } else if let value = try? container.decode([String: JSONValue].self) {
+      self = .object(value)
     } else {
-      self = .array(try value.decode([JSONValue].self))
+      self = .array(try container.decode([JSONValue].self))
     }
   }
 
