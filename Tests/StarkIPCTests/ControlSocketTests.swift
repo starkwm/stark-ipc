@@ -39,7 +39,7 @@ struct SocketClientTests {
   }
 }
 
-@Suite("SocketServer")
+@Suite("SocketServer", .serialized)
 struct SocketServerTests {
   @Test("start: serves requests, protects the socket, and rejects a second server")
   func roundTrip() throws {
@@ -182,37 +182,6 @@ struct SocketServerTests {
     #expect(before.st_ino == after.st_ino)
   }
 
-  @Test("publish: subscribers outlive the initial request deadline")
-  func subscriptionOutlivesRequestDeadline() throws {
-    let directory = try socketDirectory()
-    defer { try? FileManager.default.removeItem(at: directory) }
-
-    let path = directory.appending(path: "control.sock").path
-    let server = SocketServer<ControlRequest, ControlResponse>(
-      path: path,
-      errorResponse: { ControlResponse(ok: false, error: $0.localizedDescription) },
-      handler: { _ in SocketReply(ControlResponse(value: .string("ready")), keepOpen: true) }
-    )
-
-    try server.start()
-    defer { server.stop() }
-
-    let client = try SocketClient(path: path)
-    try client.send(ControlRequest(command: "arbitrary"))
-    #expect(try client.receive(ControlResponse.self).value == .string("ready"))
-
-    Thread.sleep(forTimeInterval: 5.1)
-
-    server.publish(ControlResponse(value: .number(1)))
-    server.publish(ControlResponse(value: .number(2)))
-
-    #expect(try client.receive(ControlResponse.self).value == .number(1))
-    #expect(try client.receive(ControlResponse.self).value == .number(2))
-
-    server.stop()
-    #expect(throws: (any Error).self) { try client.receiveLine() }
-  }
-
   @Test("publish: preserves the order of large replies")
   func publishedReplyOrder() throws {
     let directory = try socketDirectory()
@@ -239,31 +208,6 @@ struct SocketServerTests {
 
     #expect(try client.receive(String.self) == first)
     #expect(try client.receive(String.self) == second)
-  }
-
-  @Test("request handling: disconnects idle and oversized clients")
-  func requestLimits() throws {
-    let directory = try socketDirectory()
-    defer { try? FileManager.default.removeItem(at: directory) }
-
-    let path = directory.appending(path: "control.sock").path
-    let server = testServer(path: path)
-    try server.start()
-    defer { server.stop() }
-
-    for oversized in [true, false] {
-      let fd = try LocalSocket.connect(path: path)
-      defer { close(fd) }
-
-      var timeout = timeval(tv_sec: 7, tv_usec: 0)
-      setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
-
-      if oversized { try? LocalSocket.send(Data(repeating: 65, count: 131_073), to: fd) }
-
-      var byte: UInt8 = 0
-      let count = recv(fd, &byte, 1, 0)
-      #expect(count == 0 || (count < 0 && errno == ECONNRESET))
-    }
   }
 
   @Test(
@@ -362,6 +306,65 @@ struct SocketServerTests {
     #expect(try client.receive(String.self) == payload)
     #expect(completed.wait(timeout: .now() + 2) == .success)
     #expect(throws: (any Error).self) { try client.receiveLine() }
+  }
+}
+
+@Suite("SocketServer deadlines")
+struct SocketServerDeadlineTests {
+  @Test("publish: subscribers outlive the initial request deadline")
+  func subscriptionOutlivesRequestDeadline() throws {
+    let directory = try socketDirectory()
+    defer { try? FileManager.default.removeItem(at: directory) }
+
+    let path = directory.appending(path: "control.sock").path
+    let server = SocketServer<ControlRequest, ControlResponse>(
+      path: path,
+      errorResponse: { ControlResponse(ok: false, error: $0.localizedDescription) },
+      handler: { _ in SocketReply(ControlResponse(value: .string("ready")), keepOpen: true) }
+    )
+
+    try server.start()
+    defer { server.stop() }
+
+    let client = try SocketClient(path: path)
+    try client.send(ControlRequest(command: "arbitrary"))
+    #expect(try client.receive(ControlResponse.self).value == .string("ready"))
+
+    Thread.sleep(forTimeInterval: 5.1)
+
+    server.publish(ControlResponse(value: .number(1)))
+    server.publish(ControlResponse(value: .number(2)))
+
+    #expect(try client.receive(ControlResponse.self).value == .number(1))
+    #expect(try client.receive(ControlResponse.self).value == .number(2))
+
+    server.stop()
+    #expect(throws: (any Error).self) { try client.receiveLine() }
+  }
+
+  @Test("request handling: disconnects idle and oversized clients")
+  func requestLimits() throws {
+    let directory = try socketDirectory()
+    defer { try? FileManager.default.removeItem(at: directory) }
+
+    let path = directory.appending(path: "control.sock").path
+    let server = testServer(path: path)
+    try server.start()
+    defer { server.stop() }
+
+    for oversized in [true, false] {
+      let fd = try LocalSocket.connect(path: path)
+      defer { close(fd) }
+
+      var timeout = timeval(tv_sec: 7, tv_usec: 0)
+      setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
+
+      if oversized { try? LocalSocket.send(Data(repeating: 65, count: 131_073), to: fd) }
+
+      var byte: UInt8 = 0
+      let count = recv(fd, &byte, 1, 0)
+      #expect(count == 0 || (count < 0 && errno == ECONNRESET))
+    }
   }
 
   @Test(
