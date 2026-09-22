@@ -65,4 +65,4 @@ public enum JSONValue: Codable, Equatable, Sendable {
 
 Values encode as ordinary JSON, without enum case names or wrapper objects. Numbers use `Double`, so use a custom payload type if your application needs exact integers beyond its precision.
 
-`JSONValue` implements the standard `init(from:)` and `encode(to:)` Codable methods. A standalone JSON null decodes as `.null`. For the optional `value` field of a control message, both a missing field and a JSON null decode as `nil`. Setting that field to `.null` explicitly encodes a JSON null.
+A standalone JSON null decodes as `.null`. For the optional `value` field of a control message, both a missing field and a JSON null decode as `nil`. Setting that field to `.null` encodes a JSON null.
