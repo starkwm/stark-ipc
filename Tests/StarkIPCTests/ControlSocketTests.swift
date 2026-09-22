@@ -1,10 +1,9 @@
 import Darwin
 import Foundation
+import StarkIPC
 import Testing
 
-@testable import StarkIPC
-
-@Test func roundTripAndExclusiveOwnership() async throws {
+@Test func roundTrip() throws {
   let directory = try socketDirectory()
   defer { try? FileManager.default.removeItem(at: directory) }
 
@@ -12,25 +11,20 @@ import Testing
   let server = testServer(path: path) { request in
     ControlResponse(value: .string(request.command))
   }
+
   try server.start()
   defer { server.stop() }
 
-  let duplicate = testServer(path: path) { _ in ControlResponse() }
+  let duplicate = testServer(path: path)
   #expect(throws: (any Error).self) { try duplicate.start() }
 
-  let response = try await Task.detached {
-    let client = try SocketClient(path: path)
-    try client.send(ControlRequest(command: "hello"))
+  let client = try SocketClient(path: path)
+  try client.send(ControlRequest(command: "hello"))
 
-    return try client.receive(ControlResponse.self)
-  }.value
+  let response = try client.receive(ControlResponse.self)
 
   #expect(response.ok)
-  if case .string(let value) = response.value {
-    #expect(value == "hello")
-  } else {
-    Issue.record("Missing response")
-  }
+  #expect(response.value == .string("hello"))
 
   var info = stat()
   #expect(lstat(path, &info) == 0)
@@ -40,70 +34,67 @@ import Testing
   #expect(!FileManager.default.fileExists(atPath: path))
 }
 
-@Test func refusesToReplaceAnExistingFile() throws {
+@Test func preservesExistingFile() throws {
   let directory = try socketDirectory()
   defer { try? FileManager.default.removeItem(at: directory) }
 
   let path = directory.appending(path: "control.sock")
   try Data("keep".utf8).write(to: path)
 
-  let server = testServer(path: path.path) { _ in ControlResponse() }
+  let server = testServer(path: path.path)
   #expect(throws: (any Error).self) { try server.start() }
   #expect(try String(contentsOf: path, encoding: .utf8) == "keep")
 }
 
-@Test func acceptsSplitRequestsAndRejectsMalformedJSON() async throws {
+@Test(arguments: [
+  (#"{"command":"query","arguments":[]}"#, true),
+  ("{broken}", false),
+])
+func splitRequests(payload: String, ok: Bool) throws {
   let directory = try socketDirectory()
   defer { try? FileManager.default.removeItem(at: directory) }
 
   let path = directory.appending(path: "control.sock").path
-  let server = testServer(path: path) { _ in ControlResponse() }
+  let server = testServer(path: path)
   try server.start()
   defer { server.stop() }
 
-  for payload in [#"{"command":"query","arguments":[]}"#, "{broken}"] {
-    let ok = try await Task.detached {
-      let fd = try LocalSocket.connect(path: path)
-      defer { close(fd) }
+  let fd = try LocalSocket.connect(path: path)
+  defer { close(fd) }
 
-      var timeout = timeval(tv_sec: 2, tv_usec: 0)
-      setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
+  var timeout = timeval(tv_sec: 2, tv_usec: 0)
+  setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
 
-      let bytes = Data(payload.utf8)
-      try LocalSocket.send(bytes.prefix(2), to: fd)
-      try LocalSocket.send(bytes.dropFirst(2) + Data([10]), to: fd)
+  let bytes = Data(payload.utf8)
+  try LocalSocket.send(bytes.prefix(2), to: fd)
+  try LocalSocket.send(bytes.dropFirst(2) + Data([10]), to: fd)
 
-      var data = Data()
-      var buffer = [UInt8](repeating: 0, count: 4096)
+  var data = Data()
+  var buffer = [UInt8](repeating: 0, count: 4096)
 
-      while !data.contains(10) {
-        let count = recv(fd, &buffer, buffer.count, 0)
-        guard count > 0 else { throw SocketError.message("No response") }
+  while !data.contains(10) {
+    let count = recv(fd, &buffer, buffer.count, 0)
+    guard count > 0 else { throw SocketError.message("No response") }
 
-        data.append(contentsOf: buffer.prefix(count))
-      }
-
-      return try JSONDecoder().decode(ControlResponse.self, from: data).ok
-    }.value
-
-    #expect(ok == !payload.contains("broken"))
+    data.append(contentsOf: buffer.prefix(count))
   }
+
+  #expect(try JSONDecoder().decode(ControlResponse.self, from: data).ok == ok)
 }
 
-@Test func rejectsOversizedSocketPathsAndEmbeddedNulls() {
+@Test(arguments: ["", String(repeating: "x", count: 200), "/tmp/test\0ignored"])
+func invalidPaths(path: String) {
   #expect(throws: (any Error).self) {
-    try LocalSocket.address(String(repeating: "x", count: 200)) { _, _ in }
+    try LocalSocket.address(path) { _, _ in }
   }
-
-  #expect(throws: (any Error).self) { try LocalSocket.address("/tmp/test\0ignored") { _, _ in } }
 }
 
-@Test func shutdownDoesNotDeleteAReplacementFile() throws {
+@Test func preservesReplacementFile() throws {
   let directory = try socketDirectory()
   defer { try? FileManager.default.removeItem(at: directory) }
 
   let path = directory.appending(path: "control.sock")
-  let server = testServer(path: path.path) { _ in ControlResponse() }
+  let server = testServer(path: path.path)
   try server.start()
   defer { server.stop() }
 
@@ -114,7 +105,7 @@ import Testing
   #expect(try String(contentsOf: path, encoding: .utf8) == "replacement")
 }
 
-@Test func streamingSurvivesRequestDeadlineAndReceivesMultipleFrames() throws {
+@Test func subscriptionOutlivesRequestDeadline() throws {
   let directory = try socketDirectory()
   defer { try? FileManager.default.removeItem(at: directory) }
 
@@ -124,6 +115,7 @@ import Testing
     errorResponse: { ControlResponse(ok: false, error: $0.localizedDescription) },
     handler: { _ in SocketReply(ControlResponse(value: .string("ready")), keepOpen: true) }
   )
+
   try server.start()
   defer { server.stop() }
 
@@ -132,8 +124,10 @@ import Testing
   #expect(try client.receive(ControlResponse.self).value == .string("ready"))
 
   Thread.sleep(forTimeInterval: 5.1)
+
   server.publish(ControlResponse(value: .number(1)))
   server.publish(ControlResponse(value: .number(2)))
+
   #expect(try client.receive(ControlResponse.self).value == .number(1))
   #expect(try client.receive(ControlResponse.self).value == .number(2))
 
@@ -141,14 +135,12 @@ import Testing
   #expect(throws: (any Error).self) { try client.receiveLine() }
 }
 
-@Test func stopAndRestartAndDeinitialisationReleaseOwnership() throws {
+@Test func serverLifecycle() throws {
   let directory = try socketDirectory()
   defer { try? FileManager.default.removeItem(at: directory) }
 
   let path = directory.appending(path: "control.sock").path
-  var server: SocketServer<ControlRequest, ControlResponse>? = testServer(path: path) { _ in
-    ControlResponse()
-  }
+  var server: SocketServer<ControlRequest, ControlResponse>? = testServer(path: path)
 
   try server?.start()
   try server?.start()
@@ -161,12 +153,12 @@ import Testing
   server = nil
   #expect(!FileManager.default.fileExists(atPath: path))
 
-  let replacement = testServer(path: path) { _ in ControlResponse() }
+  let replacement = testServer(path: path)
   try replacement.start()
   replacement.stop()
 }
 
-@Test func refusesSymlinksAndReleasesLockAfterFailedStart() throws {
+@Test func failedStartReleasesLock() throws {
   let directory = try socketDirectory()
   defer { try? FileManager.default.removeItem(at: directory) }
 
@@ -175,10 +167,13 @@ import Testing
   try Data("keep".utf8).write(to: target)
   try FileManager.default.createSymbolicLink(atPath: path, withDestinationPath: target.path)
 
-  let server = testServer(path: path) { _ in ControlResponse() }
+  let server = testServer(path: path)
   #expect(throws: (any Error).self) { try server.start() }
 
   try FileManager.default.removeItem(atPath: path)
+  try server.start()
+  server.stop()
+
   try FileManager.default.removeItem(atPath: path + ".lock")
   try FileManager.default.createSymbolicLink(
     atPath: path + ".lock",
@@ -192,12 +187,12 @@ import Testing
   server.stop()
 }
 
-@Test func oversizedAndIdleRequestsDisconnect() throws {
+@Test func requestLimits() throws {
   let directory = try socketDirectory()
   defer { try? FileManager.default.removeItem(at: directory) }
 
   let path = directory.appending(path: "control.sock").path
-  let server = testServer(path: path) { _ in ControlResponse() }
+  let server = testServer(path: path)
   try server.start()
   defer { server.stop() }
 
@@ -216,7 +211,7 @@ import Testing
   }
 }
 
-@Test func completionRunsAfterReplyEvenWhenClientDisconnects() throws {
+@Test func completionAfterDisconnect() throws {
   let directory = try socketDirectory()
   defer { try? FileManager.default.removeItem(at: directory) }
 
@@ -235,6 +230,7 @@ import Testing
       return SocketReply(ControlResponse(), onComplete: { completed.signal() })
     }
   )
+
   try server.start()
   defer { server.stop() }
 
@@ -248,12 +244,12 @@ import Testing
   #expect(completed.wait(timeout: .now() + 2) == .success)
 }
 
-@Test func shutdownDoesNotDeleteAReplacementSocket() throws {
+@Test func preservesReplacementSocket() throws {
   let directory = try socketDirectory()
   defer { try? FileManager.default.removeItem(at: directory) }
 
   let path = directory.appending(path: "control.sock").path
-  let server = testServer(path: path) { _ in ControlResponse() }
+  let server = testServer(path: path)
   try server.start()
   defer { server.stop() }
 
@@ -272,25 +268,7 @@ import Testing
   #expect(before.st_ino == after.st_ino)
 }
 
-@Test func transportAcceptsMessagesWithoutCommands() throws {
-  let directory = try socketDirectory()
-  defer { try? FileManager.default.removeItem(at: directory) }
-
-  let path = directory.appending(path: "control.sock").path
-  let server = SocketServer<Int, String>(
-    path: path,
-    errorResponse: { $0.localizedDescription },
-    handler: { SocketReply("value=\($0)") }
-  )
-  try server.start()
-  defer { server.stop() }
-
-  let client = try SocketClient(path: path)
-  try client.send(42)
-  #expect(try client.receive(String.self) == "value=42")
-}
-
-@Test func largeRepliesWaitForReadersAndCompleteAfterWriting() throws {
+@Test func largeReplyCompletion() throws {
   let directory = try socketDirectory()
   defer { try? FileManager.default.removeItem(at: directory) }
 
@@ -302,6 +280,7 @@ import Testing
     errorResponse: { $0.localizedDescription },
     handler: { _ in SocketReply(payload, onComplete: { completed.signal() }) }
   )
+
   try server.start()
   defer { server.stop() }
 
@@ -313,7 +292,7 @@ import Testing
   #expect(throws: (any Error).self) { try client.receiveLine() }
 }
 
-@Test func largePublishedRepliesKeepTheirOrder() throws {
+@Test func publishedReplyOrder() throws {
   let directory = try socketDirectory()
   defer { try? FileManager.default.removeItem(at: directory) }
 
@@ -323,6 +302,7 @@ import Testing
     errorResponse: { $0.localizedDescription },
     handler: { _ in SocketReply("ready", keepOpen: true) }
   )
+
   try server.start()
   defer { server.stop() }
 
@@ -334,12 +314,13 @@ import Testing
   let second = String(repeating: "b", count: 200_000)
   server.publish(first)
   server.publish(second)
+
   #expect(try client.receive(String.self) == first)
   #expect(try client.receive(String.self) == second)
 }
 
 @Test(arguments: [false, true])
-func stalledSubscriptionsDoNotBlockRequests(stop: Bool) throws {
+func stalledSubscriber(stop: Bool) throws {
   let directory = try socketDirectory()
   defer { try? FileManager.default.removeItem(at: directory) }
 
@@ -352,15 +333,18 @@ func stalledSubscriptionsDoNotBlockRequests(stop: Bool) throws {
     handler: { request in
       if request == 1 {
         entered.signal()
+
         return SocketReply(
           String(repeating: "x", count: 800_000),
           keepOpen: true,
           onComplete: { completed.signal() }
         )
       }
+
       return SocketReply("ok")
     }
   )
+
   try server.start()
   defer { server.stop() }
 
@@ -374,12 +358,13 @@ func stalledSubscriptionsDoNotBlockRequests(stop: Bool) throws {
   #expect(completed.wait(timeout: .now()) == .timedOut)
 
   if stop { server.stop() }
+
   #expect(completed.wait(timeout: .now() + 6) == .success)
   #expect(throws: (any Error).self) { try stalled.receiveLine() }
   #expect(completed.wait(timeout: .now()) == .timedOut)
 }
 
-@Test func oversizedRepliesDisconnect() throws {
+@Test func replyLimit() throws {
   let directory = try socketDirectory()
   defer { try? FileManager.default.removeItem(at: directory) }
 
@@ -389,6 +374,7 @@ func stalledSubscriptionsDoNotBlockRequests(stop: Bool) throws {
     errorResponse: { $0.localizedDescription },
     handler: { _ in SocketReply(String(repeating: "x", count: 1_048_576)) }
   )
+
   try server.start()
   defer { server.stop() }
 
@@ -398,7 +384,7 @@ func stalledSubscriptionsDoNotBlockRequests(stop: Bool) throws {
 }
 
 private func socketDirectory() throws -> URL {
-  let directory = URL(fileURLWithPath: "/tmp/sborders-test-" + UUID().uuidString.prefix(8))
+  let directory = URL(fileURLWithPath: "/tmp/stark-ipc-" + UUID().uuidString.prefix(8))
   try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
 
   return directory
@@ -406,12 +392,12 @@ private func socketDirectory() throws -> URL {
 
 private func testServer(
   path: String,
-  handler: @escaping @Sendable (ControlRequest) async -> ControlResponse
+  handler: @escaping @Sendable (ControlRequest) -> ControlResponse = { _ in ControlResponse() }
 ) -> SocketServer<ControlRequest, ControlResponse> {
   SocketServer(
     path: path,
     errorResponse: { ControlResponse(ok: false, error: $0.localizedDescription) },
-    handler: { SocketReply(await handler($0)) }
+    handler: { SocketReply(handler($0)) }
   )
 }
 
