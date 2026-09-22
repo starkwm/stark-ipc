@@ -1,7 +1,7 @@
 import Darwin
 import Foundation
 
-/// All mutable connection state is confined to queue; handlers cross to the main actor explicitly.
+/// The serial queue owns connection state. Request handlers run in separate tasks.
 public final class SocketServer<Request: Decodable & Sendable, Response: Encodable & Sendable>:
   @unchecked Sendable
 {
@@ -27,9 +27,7 @@ public final class SocketServer<Request: Decodable & Sendable, Response: Encodab
   private let handler: @Sendable (Request) async -> SocketReply<Response>
 
   private let queue = DispatchQueue(label: "StarkIPC.control")
-
   private let queueKey = DispatchSpecificKey<Bool>()
-
   private var listener: (any DispatchSourceRead)?
   private var connections: [Int32: Connection] = [:]
   private var lock: Int32 = -1
@@ -72,6 +70,7 @@ public final class SocketServer<Request: Decodable & Sendable, Response: Encodab
 
       do {
         var info = stat()
+
         if lstat(path, &info) == 0 {
           guard info.st_uid == getuid(), info.st_mode & S_IFMT == S_IFSOCK else {
             throw SocketError.message(
@@ -93,6 +92,7 @@ public final class SocketServer<Request: Decodable & Sendable, Response: Encodab
 
         if status == 0 {
           var bound = stat()
+
           if lstat(path, &bound) == 0, bound.st_mode & S_IFMT == S_IFSOCK {
             socketIdentity = (bound.st_dev, bound.st_ino)
           }
@@ -113,7 +113,7 @@ public final class SocketServer<Request: Decodable & Sendable, Response: Encodab
         listener = source
         source.resume()
       } catch {
-        removeOwnedSocket()
+        removeSocket()
         close(lock)
         lock = -1
 
@@ -134,7 +134,7 @@ public final class SocketServer<Request: Decodable & Sendable, Response: Encodab
     queue.async { [weak self] in
       guard let self else { return }
 
-      for fd in self.connections.keys.filter({ self.connections[$0]?.subscribed == true }) {
+      for (fd, connection) in self.connections where connection.subscribed {
         self.respond(response, to: fd)
       }
     }
@@ -148,7 +148,7 @@ public final class SocketServer<Request: Decodable & Sendable, Response: Encodab
 
     for fd in Array(connections.keys) { disconnect(fd) }
 
-    removeOwnedSocket()
+    removeSocket()
 
     if lock >= 0 {
       close(lock)
@@ -156,10 +156,11 @@ public final class SocketServer<Request: Decodable & Sendable, Response: Encodab
     }
   }
 
-  private func removeOwnedSocket() {
+  private func removeSocket() {
     guard let identity = socketIdentity else { return }
 
     var info = stat()
+
     if lstat(path, &info) == 0, info.st_mode & S_IFMT == S_IFSOCK,
       info.st_dev == identity.0, info.st_ino == identity.1
     {
@@ -194,6 +195,7 @@ public final class SocketServer<Request: Decodable & Sendable, Response: Encodab
       let connection = Connection(source: source)
       let id = connection.id
       connections[client] = connection
+
       source.resume()
 
       queue.asyncAfter(deadline: .now() + 5) { [weak self] in
@@ -208,8 +210,10 @@ public final class SocketServer<Request: Decodable & Sendable, Response: Encodab
   private func readClient(_ fd: Int32) {
     var buffer = [UInt8](repeating: 0, count: 4096)
     let count = recv(fd, &buffer, buffer.count, 0)
+
     guard count > 0 else {
       if count == 0 || (errno != EAGAIN && errno != EINTR) { disconnect(fd) }
+
       return
     }
 
@@ -221,6 +225,7 @@ public final class SocketServer<Request: Decodable & Sendable, Response: Encodab
     connections[fd]?.data.append(contentsOf: buffer.prefix(count))
 
     guard let connection = connections[fd] else { return }
+
     guard connection.data.count <= 131_072 else {
       disconnect(fd)
       return
@@ -242,6 +247,7 @@ public final class SocketServer<Request: Decodable & Sendable, Response: Encodab
 
         self?.queue.async { [weak self] in
           guard let self else { return }
+
           guard self.connections[fd]?.id == id else {
             reply.onComplete()
             return
@@ -265,6 +271,7 @@ public final class SocketServer<Request: Decodable & Sendable, Response: Encodab
 
       let writes = connections[fd]?.writes ?? []
       let pendingBytes = writes.reduce(0) { $0 + $1.data.count - $1.offset }
+
       guard writes.count < 256, data.count <= 1_048_576 - pendingBytes else {
         throw SocketError.message("Response buffer is full.")
       }
@@ -287,21 +294,27 @@ public final class SocketServer<Request: Decodable & Sendable, Response: Encodab
           0
         )
       }
+
       if count < 0 && errno == EINTR { continue }
+
       if count < 0 && errno == EAGAIN {
         waitToWrite(fd)
         return
       }
+
       guard count > 0 else {
         disconnect(fd)
         return
       }
 
       connections[fd]?.writes[0].offset += count
+
       guard write.offset + count == write.data.count else { continue }
 
       connections[fd]?.writes.removeFirst()
+
       if connections[fd]?.subscribed == false { disconnect(fd) }
+
       write.onComplete?()
     }
 
@@ -314,16 +327,19 @@ public final class SocketServer<Request: Decodable & Sendable, Response: Encodab
 
     // Give the write source its own descriptor so either source can cancel safely.
     let descriptor = dup(fd)
+
     guard descriptor >= 0 else {
       disconnect(fd)
       return
     }
+
     _ = fcntl(descriptor, F_SETFD, FD_CLOEXEC)
 
     let id = connection.id
     let writer = DispatchSource.makeWriteSource(fileDescriptor: descriptor, queue: queue)
     writer.setEventHandler { [weak self] in
       guard self?.connections[fd]?.id == id else { return }
+
       self?.writeClient(fd)
     }
     writer.setCancelHandler { close(descriptor) }
@@ -332,14 +348,17 @@ public final class SocketServer<Request: Decodable & Sendable, Response: Encodab
 
     queue.asyncAfter(deadline: .now() + 5) { [weak self] in
       guard self?.connections[fd]?.writer === writer else { return }
+
       self?.disconnect(fd)
     }
   }
 
   private func disconnect(_ fd: Int32) {
     guard let connection = connections.removeValue(forKey: fd) else { return }
+
     connection.writer?.cancel()
     connection.source.cancel()
+
     for write in connection.writes { write.onComplete?() }
   }
 }

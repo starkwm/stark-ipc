@@ -26,7 +26,11 @@ public final class SocketClient {
     try LocalSocket.send(data, to: fd)
   }
 
-  /// Returns the original JSON bytes so callers can preserve CLI output exactly.
+  public func receive<Response: Decodable>(_ type: Response.Type) throws -> Response {
+    try JSONDecoder().decode(type, from: receiveLine())
+  }
+
+  /// Returns one JSON line without its newline, preserving the original bytes.
   public func receiveLine() throws -> Data {
     var buffer = [UInt8](repeating: 0, count: 8192)
 
@@ -39,15 +43,13 @@ public final class SocketClient {
       }
 
       let count = recv(fd, &buffer, buffer.count, 0)
+
       if count < 0 && errno == EINTR { continue }
       guard count > 0 else { throw SocketError.message("Connection closed or timed out.") }
 
       pending.append(contentsOf: buffer.prefix(count))
+
       guard pending.count <= 1_048_576 else { throw SocketError.message("Response too large.") }
     }
-  }
-
-  public func receive<Response: Decodable>(_ type: Response.Type) throws -> Response {
-    try JSONDecoder().decode(type, from: receiveLine())
   }
 }

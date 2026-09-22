@@ -12,12 +12,14 @@ public enum LocalSocket {
 
     var address = sockaddr_un()
     let bytes = Array(path.utf8) + [0]
+
     guard bytes.count <= MemoryLayout.size(ofValue: address.sun_path) else {
       throw SocketError.message("Socket path is too long.")
     }
 
     address.sun_family = sa_family_t(AF_UNIX)
     address.sun_len = UInt8(MemoryLayout<sockaddr_un>.size)
+
     withUnsafeMutableBytes(of: &address.sun_path) { buffer in buffer.copyBytes(from: bytes) }
 
     return try withUnsafePointer(to: &address) {
