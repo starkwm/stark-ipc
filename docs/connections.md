@@ -26,6 +26,10 @@ Call `stop()` to disconnect clients, remove the socket the server owns, and rele
 
 The server accepts at most 32 concurrent connections. It disconnects clients whose buffered request exceeds 131,072 bytes, or whose connection has not become a subscription within five seconds of acceptance. That deadline includes handler execution.
 
-The client sets a five-second send timeout and, by default, a five-second receive timeout. `streaming: true` disables the receive timeout. The client rejects a response buffer larger than 1,048,576 bytes. Both buffer limits include any newline or additional data in the buffer.
+The client sets a five-second send timeout and, by default, a five-second receive timeout. `streaming: true` disables the receive timeout.
 
-Server writes use nonblocking sockets. When a socket is temporarily full, the server waits for it to become writable and resumes the reply. Each connection can queue up to 256 responses with at most 1,048,576 unsent bytes, including newlines. Exceeding either limit disconnects the client. A pending write queue must drain within five seconds of first waiting for a writable socket, including for subscriptions. Other write failures also disconnect the client. There is no delivery acknowledgement.
+The client rejects a response buffer larger than 1,048,576 bytes. The request and response buffer limits include any newline or additional data in the buffer.
+
+Server writes use nonblocking sockets. When a socket is full, the server waits for room and resumes the reply. Each connection can queue up to 256 responses with at most 1,048,576 unsent bytes, including newlines. Exceeding either limit disconnects the client.
+
+Once the server starts waiting for room, the write queue must drain within five seconds. This deadline also applies to subscriptions. Other write failures disconnect the client too. There is no delivery acknowledgement.

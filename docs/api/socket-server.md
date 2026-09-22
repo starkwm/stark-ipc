@@ -11,7 +11,7 @@ public final class SocketServer<
 >: @unchecked Sendable
 ```
 
-The server manages connections on an internal serial dispatch queue. Each valid request runs through an asynchronous handler. The handler does not automatically run on the main actor; switch to the main actor when accessing main-actor state. Handlers for different connections can overlap.
+The server manages connections on an internal serial dispatch queue. It runs each valid request's handler in a separate task. Switch to the main actor when accessing main-actor state. Handlers for different connections can overlap.
 
 ### Create a server
 
@@ -24,11 +24,11 @@ public init(
 )
 ```
 
-`path` identifies the socket. `serviceName` appears in the socket ownership error. Initialization stores the configuration; call `start()` to listen.
+`path` identifies the socket. `serviceName` appears in the socket ownership error. Initialization stores the configuration. Call `start()` to listen.
 
 `errorResponse` converts request decoding errors into a response, which the server attempts to send before closing the connection. It runs on the internal queue. Other transport failures can close the connection without a response.
 
-`handler` receives a decoded request and returns a reply. It is nonthrowing, so catch application errors inside the handler and represent them in your response type.
+`handler` receives a decoded request and returns a reply. It cannot throw. Catch application errors inside the handler and include them in your response.
 
 ### Start and stop the server
 
@@ -49,7 +49,7 @@ Stopping does not cancel an application handler already running. Keep the server
 public func publish(_ response: Response)
 ```
 
-Queues a response for every connection marked as subscribed when the queued operation runs. It returns without waiting for writes and provides no delivery result. Responses sent before a connection becomes subscribed are not replayed.
+Queues a response for every connection subscribed when the queued operation runs. It returns without waiting for writes and provides no delivery result. The server does not replay earlier responses to new subscribers.
 
 A handler subscribes its connection by returning a reply with `keepOpen: true`. The server sends that reply's response first. Published updates use the same `Response` type. There are no built-in topics or subscription filters.
 
@@ -92,4 +92,6 @@ public struct SocketReply<Response: Sendable>: Sendable {
 
 `response` is the initial response. `keepOpen` defaults to `false`, so the server closes the connection after attempting the reply. Set it to `true` to receive future calls to `publish(_:)`.
 
-`onComplete` runs on the server's internal queue after the reply has been written to the socket, or when writing fails or the connection disappears. It waits for buffered writes but does not confirm that the client received the response. It is not guaranteed to run if the server has been deallocated. Keep the callback short and avoid calling `start()` from it because `start()` synchronously enters that same queue.
+`onComplete` runs on the server's internal queue after the server writes the reply to the socket, or when writing fails or the connection disappears. It waits for buffered writes but does not confirm that the client received the response. It may not run if the server has been deallocated.
+
+Keep the callback short. Do not call `start()` from it because `start()` synchronously enters that same queue.
