@@ -5,7 +5,7 @@ lint:
 	@swift format lint --strict -r Sources Tests Package.swift
 
 test:
-	@swift test --parallel --disable-xctest
+	@swift test --no-parallel --disable-xctest
 
 .DEFAULT_GOAL := lint
 .PHONY: format lint test
