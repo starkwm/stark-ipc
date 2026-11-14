@@ -30,6 +30,8 @@ public init(
 
 `handler` receives a decoded request and returns a reply. It cannot throw. Catch application errors inside the handler and include them in your response.
 
+The server cancels the handler's task when its connection closes before the reply is sent: the client disconnects, the connection deadline passes, or `stop()` runs. Cancellation is cooperative. Check `Task.isCancelled` or use cancellable calls such as `Task.sleep(for:)` to stop early, and forward cancellation to any unstructured tasks the handler waits on. A cancelled handler must still return a reply. The server discards it and runs its `onComplete`.
+
 ### Start and stop the server
 
 ```swift
@@ -41,7 +43,7 @@ public func stop()
 
 Calling `start()` while listening has no effect. `stop()` cancels the listener and client connections, removes the socket if it still matches the one the server created, and releases the lock. The lock file remains on disk. Repeated calls to `stop()` are safe, and the same server can start again afterward. Deinitialization also calls `stop()`.
 
-Stopping does not cancel an application handler already running. Keep the server alive for as long as it should accept requests.
+Stopping cancels any handler still running, but does not wait for it to return. Keep the server alive for as long as it should accept requests.
 
 ### Publish updates
 

@@ -19,6 +19,7 @@ public final class SocketServer<Request: Decodable & Sendable, Response: Encodab
     var handling = false
     var writes: [Write] = []
     var writer: (any DispatchSourceWrite)?
+    var task: Task<Void, Never>?
   }
 
   private let serviceName: String
@@ -242,7 +243,7 @@ public final class SocketServer<Request: Decodable & Sendable, Response: Encodab
         from: connection.data.prefix(upTo: newline)
       )
 
-      Task { [weak self, handler] in
+      connections[fd]?.task = Task { [weak self, handler] in
         let reply = await handler(request)
 
         self?.queue.async { [weak self] in
@@ -356,6 +357,7 @@ public final class SocketServer<Request: Decodable & Sendable, Response: Encodab
   private func disconnect(_ fd: Int32) {
     guard let connection = connections.removeValue(forKey: fd) else { return }
 
+    connection.task?.cancel()
     connection.writer?.cancel()
     connection.source.cancel()
 
