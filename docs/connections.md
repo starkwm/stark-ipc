@@ -24,7 +24,7 @@ Call `stop()` to disconnect clients, remove the socket the server owns, and rele
 
 ## Timeouts and limits
 
-The server accepts at most 32 concurrent connections. It disconnects clients whose buffered request exceeds 131,072 bytes, or whose connection has not become a subscription within five seconds of acceptance. That deadline includes handler execution. When the server disconnects a client before replying, it cancels that client's handler.
+The server accepts at most 32 concurrent connections. It disconnects clients whose buffered request exceeds 131,072 bytes, or whose connection has not become a subscription within five seconds of acceptance. That deadline includes handler execution. Pass `connectionTimeout` when creating the server to change it. When the server disconnects a client before replying, it cancels that client's handler.
 
 The client sets a five-second send timeout and, by default, a five-second receive timeout. `streaming: true` disables the receive timeout.
 

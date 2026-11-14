@@ -285,7 +285,7 @@ struct SocketServerTests {
 
   @Test(
     "readClient: cancels a running handler when its connection ends",
-    arguments: [HandlerEnd.clientCloses, .serverStops]
+    arguments: [HandlerEnd.clientCloses, .serverStops, .deadlinePasses]
   )
   func cancelsHandler(end: HandlerEnd) throws {
     let directory = try socketDirectory()
@@ -293,7 +293,10 @@ struct SocketServerTests {
 
     let path = directory.appending(path: "control.sock").path
     let handler = CancellationProbe()
-    let server = handler.server(path: path)
+    let server = handler.server(
+      path: path,
+      connectionTimeout: end == .deadlinePasses ? .milliseconds(500) : .seconds(5)
+    )
 
     try server.start()
     defer { server.stop() }
@@ -308,6 +311,9 @@ struct SocketServerTests {
     switch end {
     case .clientCloses: shutdown(fd, SHUT_RDWR)
     case .serverStops: server.stop()
+    case .deadlinePasses:
+      var byte: UInt8 = 0
+      #expect(recv(fd, &byte, 1, 0) == 0)
     }
 
     #expect(handler.cancelled.wait(timeout: .now() + 2) == .success)
@@ -467,12 +473,13 @@ struct SocketServerDeadlineTests {
 }
 
 enum HandlerEnd: CustomTestStringConvertible, Sendable {
-  case clientCloses, serverStops
+  case clientCloses, serverStops, deadlinePasses
 
   var testDescription: String {
     switch self {
     case .clientCloses: "client closes"
     case .serverStops: "server stops"
+    case .deadlinePasses: "deadline passes"
     }
   }
 }
@@ -484,7 +491,10 @@ private struct CancellationProbe {
   let completed = DispatchSemaphore(value: 0)
   var duration = Duration.seconds(10)
 
-  func server(path: String) -> SocketServer<Int, String> {
+  func server(
+    path: String,
+    connectionTimeout: Duration = .seconds(5)
+  ) -> SocketServer<Int, String> {
     let entered = entered
     let cancelled = cancelled
     let completed = completed
@@ -492,6 +502,7 @@ private struct CancellationProbe {
 
     return SocketServer(
       path: path,
+      connectionTimeout: connectionTimeout,
       errorResponse: { $0.localizedDescription },
       handler: { _ in
         entered.signal()

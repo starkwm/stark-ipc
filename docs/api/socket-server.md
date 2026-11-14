@@ -19,12 +19,15 @@ The server manages connections on an internal serial dispatch queue. It runs eac
 public init(
   path: String,
   serviceName: String = "server",
+  connectionTimeout: Duration = .seconds(5),
   errorResponse: @escaping @Sendable (any Error) -> Response,
   handler: @escaping @Sendable (Request) async -> SocketReply<Response>
 )
 ```
 
 `path` identifies the socket. `serviceName` appears in the socket ownership error. Initialization stores the configuration. Call `start()` to listen.
+
+`connectionTimeout` limits how long a connection can stay open after it is accepted without becoming a subscription. The time includes reading the request, running the handler, and sending the reply. It must be positive. The default of five seconds matches the client's default receive timeout. See [timeouts and limits](../connections.md#timeouts-and-limits).
 
 `errorResponse` converts request decoding errors into a response, which the server attempts to send before closing the connection. It runs on the internal queue. Other transport failures can close the connection without a response.
 

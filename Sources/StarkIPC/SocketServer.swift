@@ -23,6 +23,7 @@ public final class SocketServer<Request: Decodable & Sendable, Response: Encodab
   }
 
   private let serviceName: String
+  private let connectionTimeout: TimeInterval
   private let errorResponse: @Sendable (any Error) -> Response
   private let path: String
   private let handler: @Sendable (Request) async -> SocketReply<Response>
@@ -34,12 +35,19 @@ public final class SocketServer<Request: Decodable & Sendable, Response: Encodab
   private var lock: Int32 = -1
   private var socketIdentity: (dev_t, ino_t)?
 
+  /// `connectionTimeout` is how long a connection may stay open after acceptance without
+  /// becoming a subscription. It must be positive.
   public init(
     path: String,
     serviceName: String = "server",
+    connectionTimeout: Duration = .seconds(5),
     errorResponse: @escaping @Sendable (any Error) -> Response,
     handler: @escaping @Sendable (Request) async -> SocketReply<Response>
   ) {
+    precondition(connectionTimeout > .zero, "connectionTimeout must be positive.")
+
+    let (seconds, attoseconds) = connectionTimeout.components
+    self.connectionTimeout = Double(seconds) + Double(attoseconds) / 1e18
     self.path = path
     self.serviceName = serviceName
     self.errorResponse = errorResponse
@@ -199,7 +207,7 @@ public final class SocketServer<Request: Decodable & Sendable, Response: Encodab
 
       source.resume()
 
-      queue.asyncAfter(deadline: .now() + 5) { [weak self] in
+      queue.asyncAfter(deadline: .now() + connectionTimeout) { [weak self] in
         guard self?.connections[client]?.id == id, self?.connections[client]?.subscribed == false
         else { return }
 
