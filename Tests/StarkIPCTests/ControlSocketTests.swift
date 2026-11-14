@@ -283,6 +283,56 @@ struct SocketServerTests {
     #expect(completed.wait(timeout: .now() + 2) == .success)
   }
 
+  @Test(
+    "readClient: cancels a running handler when its connection ends",
+    arguments: [HandlerEnd.clientCloses, .serverStops]
+  )
+  func cancelsHandler(end: HandlerEnd) throws {
+    let directory = try socketDirectory()
+    defer { try? FileManager.default.removeItem(at: directory) }
+
+    let path = directory.appending(path: "control.sock").path
+    let handler = CancellationProbe()
+    let server = handler.server(path: path)
+
+    try server.start()
+    defer { server.stop() }
+
+    let fd = try LocalSocket.connect(path: path)
+    defer { close(fd) }
+
+    try LocalSocket.send(Data("1\n".utf8), to: fd)
+    #expect(handler.entered.wait(timeout: .now() + 2) == .success)
+    #expect(handler.cancelled.wait(timeout: .now() + 0.2) == .timedOut)
+
+    switch end {
+    case .clientCloses: shutdown(fd, SHUT_RDWR)
+    case .serverStops: server.stop()
+    }
+
+    #expect(handler.cancelled.wait(timeout: .now() + 2) == .success)
+    #expect(handler.completed.wait(timeout: .now() + 2) == .success)
+  }
+
+  @Test("readClient: does not cancel handlers that finish in time")
+  func keepsHandlerRunning() throws {
+    let directory = try socketDirectory()
+    defer { try? FileManager.default.removeItem(at: directory) }
+
+    let path = directory.appending(path: "control.sock").path
+    let handler = CancellationProbe(duration: .milliseconds(300))
+    let server = handler.server(path: path)
+
+    try server.start()
+    defer { server.stop() }
+
+    let client = try SocketClient(path: path)
+    try client.send(1)
+    #expect(try client.receive(String.self) == "finished")
+    #expect(handler.cancelled.wait(timeout: .now()) == .timedOut)
+    #expect(handler.completed.wait(timeout: .now() + 2) == .success)
+  }
+
   @Test("writeClient: completes large replies after sending")
   func largeReplyCompletion() throws {
     let directory = try socketDirectory()
@@ -413,6 +463,45 @@ struct SocketServerDeadlineTests {
     #expect(completed.wait(timeout: .now() + 6) == .success)
     #expect(throws: (any Error).self) { try stalled.receiveLine() }
     #expect(completed.wait(timeout: .now()) == .timedOut)
+  }
+}
+
+enum HandlerEnd: CustomTestStringConvertible, Sendable {
+  case clientCloses, serverStops
+
+  var testDescription: String {
+    switch self {
+    case .clientCloses: "client closes"
+    case .serverStops: "server stops"
+    }
+  }
+}
+
+/// A handler that sleeps for `duration`, then reports whether it was cancelled first.
+private struct CancellationProbe {
+  let entered = DispatchSemaphore(value: 0)
+  let cancelled = DispatchSemaphore(value: 0)
+  let completed = DispatchSemaphore(value: 0)
+  var duration = Duration.seconds(10)
+
+  func server(path: String) -> SocketServer<Int, String> {
+    let entered = entered
+    let cancelled = cancelled
+    let completed = completed
+    let duration = duration
+
+    return SocketServer(
+      path: path,
+      errorResponse: { $0.localizedDescription },
+      handler: { _ in
+        entered.signal()
+        try? await Task.sleep(for: duration)
+
+        if Task.isCancelled { cancelled.signal() }
+
+        return SocketReply("finished", onComplete: { completed.signal() })
+      }
+    )
   }
 }
 
