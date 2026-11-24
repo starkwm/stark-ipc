@@ -5,7 +5,7 @@
 ## Requirements
 
 - macOS 26 or later
-- Swift 6.2 or later
+- Swift 6.4 or later
 - Client and server processes running as the same user
 
 ## Package setup
