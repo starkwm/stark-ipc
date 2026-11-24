@@ -2,7 +2,7 @@
 
 Swift utilities for sending JSON requests and responses over Unix sockets between processes running as the same user.
 
-Requires Swift 6.2 and macOS 26.
+Requires Swift 6.4 or later and macOS 26 or later.
 
 See the [documentation](docs/index.md) for an overview and the [API reference](docs/api/index.md) for types, methods, and transport behavior.
 
